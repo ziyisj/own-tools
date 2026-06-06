@@ -538,18 +538,20 @@ HTML = r"""<!doctype html>
         deleteButton.onclick = () => deleteProfiles([item.user_id || ""]);
         tr.children[9].appendChild(deleteButton);
 
+        const completed = completedProfiles[item.user_id || ""];
         const tierSelect = document.createElement("select");
         tierSelect.id = `tier-select-${item.user_id || ""}`;
         for (const tier of ["5X", "20X"]) {
           const option = document.createElement("option");
           option.value = tier;
           option.textContent = tier;
+          option.selected = completed ? completed.tier === tier : tier === "5X";
           tierSelect.appendChild(option);
         }
+        tierSelect.disabled = Boolean(completed);
         tr.children[10].appendChild(tierSelect);
 
         const doneButton = document.createElement("button");
-        const completed = completedProfiles[item.user_id || ""];
         doneButton.textContent = completed ? "已完成" : "完成";
         doneButton.className = "success";
         doneButton.disabled = Boolean(completed);
@@ -710,6 +712,11 @@ HTML = r"""<!doctype html>
         if (button) {
           button.textContent = "已完成";
           button.disabled = true;
+        }
+        const tierSelect = document.getElementById(`tier-select-${profileId}`);
+        if (tierSelect) {
+          tierSelect.value = tier;
+          tierSelect.disabled = true;
         }
         log(data.message);
       } catch (err) { log(`错误：${err.message}`); }
