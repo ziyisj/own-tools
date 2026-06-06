@@ -44,6 +44,7 @@ DEFAULT_PORT = 8765
 DEFAULT_MAIL_FILE = "mail_accounts.json"
 DEFAULT_COMPLETED_FILE = "completed_accounts.txt"
 DEFAULT_COMPLETED_META_FILE = "completed_profiles.json"
+DEFAULT_BILLING_FILE = "billing_profiles.json"
 GITHUB_REPO = "ziyisj/own-tools"
 COUNTRY_CACHE: Dict[str, str] = {}
 
@@ -323,10 +324,10 @@ HTML = r"""<!doctype html>
       </div>
       <div class="step-grid">
         <div class="step-box">
-          <label>第一步提示词
-            <textarea id="stepPrompt1" placeholder="一行一个，点击第一步时随机选一行填入浏览器空白输入框"></textarea>
+          <label>第一步账单资料
+            <textarea id="stepBillingPreview" readonly placeholder="从下方导入真实账单资料后，选中环境点击第一步自动填充"></textarea>
           </label>
-          <button class="primary" onclick="runBrowserStep(1)">第一步</button>
+          <button class="primary" onclick="runBillingStep()">第一步</button>
         </div>
         <div class="step-box">
           <label>第二步提示词
@@ -340,6 +341,29 @@ HTML = r"""<!doctype html>
           </label>
           <button class="primary" onclick="runBrowserStep(3)">第三步</button>
         </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>账单资料监控 <span id="billingCountText" class="muted"></span></h2>
+        <div class="row">
+          <button class="success" onclick="importBillingProfiles()">导入资料</button>
+          <button onclick="refreshBillingProfiles()">刷新资料</button>
+        </div>
+      </div>
+      <label>账单资料
+        <textarea id="billingInput" placeholder="一行一条：Full Name----Do Si----City----Address line 1----Postal code&#10;也支持指定环境：环境ID----Full Name----Do Si----City----Address line 1----Postal code"></textarea>
+      </label>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>状态</th><th>环境ID</th><th>Full name</th><th>Do Si</th><th>City</th><th>Address line 1</th><th>Postal code</th>
+            </tr>
+          </thead>
+          <tbody id="billingBody"></tbody>
+        </table>
       </div>
     </section>
 
@@ -468,13 +492,14 @@ HTML = r"""<!doctype html>
     let profileCodes = {};
     let mailResults = {};
     let completedProfiles = {};
+    let billingProfiles = [];
     let currentMailEmail = "";
     let autoMailTimer = null;
     let profileRefreshing = false;
     let mailReading = false;
     const envApiKey = "__API_KEY__";
     if (envApiKey) document.getElementById("apiKey").value = envApiKey;
-    for (const step of [1, 2, 3]) {
+    for (const step of [2, 3]) {
       const field = document.getElementById(`stepPrompt${step}`);
       field.value = localStorage.getItem(`adspower-step-${step}`) || "";
       field.addEventListener("input", () => localStorage.setItem(`adspower-step-${step}`, field.value));
@@ -604,6 +629,31 @@ HTML = r"""<!doctype html>
         tr.children[11].appendChild(doneButton);
         body.appendChild(tr);
       }
+      renderBillingProfiles(billingProfiles);
+    }
+    function renderBillingProfiles(items) {
+      billingProfiles = items || [];
+      const total = billingProfiles.length;
+      const assigned = billingProfiles.filter(item => item.profile_id).length;
+      const unused = total - assigned;
+      document.getElementById("billingCountText").textContent = `(${total} 条，未用 ${unused}，已绑定 ${assigned})`;
+      const preview = document.getElementById("stepBillingPreview");
+      if (preview) preview.value = `未用 ${unused} 条，已绑定 ${assigned} 条。选中环境后点击第一步填充账单资料。`;
+      const body = document.getElementById("billingBody");
+      body.innerHTML = "";
+      billingProfiles.forEach((item, index) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${index + 1}</td>
+          <td>${item.profile_id ? "已绑定" : "未使用"}</td>
+          <td>${item.profile_id || ""}</td>
+          <td>${item.full_name || ""}</td>
+          <td>${item.do_si || ""}</td>
+          <td>${item.city || ""}</td>
+          <td>${item.address1 || ""}</td>
+          <td>${item.postal_code || ""}</td>`;
+        body.appendChild(tr);
+      });
     }
     function renderProxies(items) {
       proxies = items;
@@ -655,12 +705,32 @@ HTML = r"""<!doctype html>
       try {
         const data = await api(`/api/profiles?config=${encodeURIComponent(JSON.stringify(cfg()))}`);
         renderProfiles(data.profiles);
+        if (data.billing) renderBillingProfiles(data.billing);
         log(`刷新完成，共 ${data.profiles.length} 个环境`);
         if (document.getElementById("autoMail")?.checked) {
           fetchAllMail(true);
         }
       } catch (err) { log(`错误：${err.message}`); }
       finally { profileRefreshing = false; }
+    }
+    async function refreshBillingProfiles() {
+      try {
+        const ids = profiles.map(p => p.user_id).filter(Boolean);
+        const data = await api("/api/billing/list", {profile_ids: ids});
+        renderBillingProfiles(data.records);
+        log(data.message);
+      } catch (err) { log(`错误：${err.message}`); }
+    }
+    async function importBillingProfiles() {
+      const raw = document.getElementById("billingInput").value;
+      if (!raw.trim()) { log("请先粘贴账单资料"); return; }
+      try {
+        const ids = profiles.map(p => p.user_id).filter(Boolean);
+        const data = await api("/api/billing/import", {raw, profile_ids: ids});
+        document.getElementById("billingInput").value = "";
+        renderBillingProfiles(data.records);
+        log(data.message);
+      } catch (err) { log(`错误：${err.message}`); }
     }
     async function refreshProxies() {
       try {
@@ -740,6 +810,15 @@ HTML = r"""<!doctype html>
         log(data.message);
       } catch (err) { log(`错误：${err.message}`); }
     }
+    async function runBillingStep() {
+      const ids = selectedIds();
+      if (!ids.length) { log("请先选择环境"); return; }
+      try {
+        const data = await api("/api/billing/fill", {...cfg(), ids});
+        if (data.records) renderBillingProfiles(data.records);
+        log(data.message);
+      } catch (err) { log(`错误：${err.message}`); }
+    }
     async function deleteSelected() {
       const ids = selectedIds();
       if (!ids.length) { log("请先选择环境"); return; }
@@ -753,6 +832,7 @@ HTML = r"""<!doctype html>
         const data = await api("/api/delete", {...cfg(), ids});
         log(data.message);
         renderProfiles(data.profiles);
+        if (data.billing) renderBillingProfiles(data.billing);
       } catch (err) { log(`错误：${err.message}`); }
     }
     async function completeProfile(profileId, email) {
@@ -1144,6 +1224,117 @@ def load_mail_accounts() -> Dict[str, Dict[str, str]]:
 def save_mail_accounts(accounts: Dict[str, Dict[str, str]]) -> None:
     with open(DEFAULT_MAIL_FILE, "w", encoding="utf-8") as handle:
         json.dump(accounts, handle, ensure_ascii=False, indent=2)
+
+
+def load_billing_profiles() -> List[Dict[str, str]]:
+    if not os.path.exists(DEFAULT_BILLING_FILE):
+        return []
+    with open(DEFAULT_BILLING_FILE, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, list) else []
+
+
+def save_billing_profiles(records: List[Dict[str, str]]) -> None:
+    with open(DEFAULT_BILLING_FILE, "w", encoding="utf-8") as handle:
+        json.dump(records, handle, ensure_ascii=False, indent=2)
+
+
+def billing_key(record: Dict[str, str]) -> str:
+    return "----".join(
+        [
+            record.get("full_name", "").strip(),
+            record.get("do_si", "").strip(),
+            record.get("city", "").strip(),
+            record.get("address1", "").strip(),
+            record.get("postal_code", "").strip(),
+        ]
+    )
+
+
+def parse_billing_line(line: str) -> Optional[Dict[str, str]]:
+    value = line.strip()
+    if not value:
+        return None
+    parts = [part.strip() for part in value.split("----")]
+    profile_id = ""
+    if len(parts) == 5:
+        full_name, do_si, city, address1, postal_code = parts
+    elif len(parts) >= 6:
+        profile_id, full_name, do_si, city, address1 = parts[:5]
+        postal_code = "----".join(parts[5:]).strip()
+    else:
+        raise AdsPowerError(f"账单资料格式错误：{value}")
+    if not all([full_name, do_si, city, address1, postal_code]):
+        raise AdsPowerError(f"账单资料字段不能为空：{value}")
+    return {
+        "profile_id": profile_id,
+        "full_name": full_name,
+        "do_si": do_si,
+        "city": city,
+        "address1": address1,
+        "postal_code": postal_code,
+    }
+
+
+def sync_billing_profiles(active_profile_ids: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    records = load_billing_profiles()
+    if not active_profile_ids:
+        return records
+    active = {str(item) for item in active_profile_ids if item}
+    filtered = [record for record in records if not record.get("profile_id") or record.get("profile_id") in active]
+    if len(filtered) != len(records):
+        save_billing_profiles(filtered)
+    return filtered
+
+
+def import_billing_profiles(raw: str, active_profile_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    records = sync_billing_profiles(active_profile_ids)
+    existing_keys = {billing_key(record) for record in records}
+    assigned_ids = {record.get("profile_id") for record in records if record.get("profile_id")}
+    added = duplicate = skipped = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = parse_billing_line(line)
+            if not record:
+                continue
+            key = billing_key(record)
+            if key in existing_keys:
+                duplicate += 1
+                continue
+            if record.get("profile_id") and record["profile_id"] in assigned_ids:
+                skipped += 1
+                continue
+            records.append(record)
+            existing_keys.add(key)
+            if record.get("profile_id"):
+                assigned_ids.add(record["profile_id"])
+            added += 1
+        except AdsPowerError:
+            skipped += 1
+    save_billing_profiles(records)
+    return {"records": records, "added": added, "duplicate": duplicate, "skipped": skipped}
+
+
+def get_or_assign_billing_profile(profile_id: str) -> Dict[str, str]:
+    records = load_billing_profiles()
+    for record in records:
+        if record.get("profile_id") == profile_id:
+            return record
+    for record in records:
+        if not record.get("profile_id"):
+            record["profile_id"] = profile_id
+            save_billing_profiles(records)
+            return record
+    raise AdsPowerError("没有未使用的账单资料")
+
+
+def remove_billing_for_profiles(profile_ids: List[str]) -> List[Dict[str, str]]:
+    remove_ids = {str(item) for item in profile_ids if item}
+    records = [record for record in load_billing_profiles() if record.get("profile_id") not in remove_ids]
+    save_billing_profiles(records)
+    return records
 
 
 def load_completed_profiles() -> Dict[str, Dict[str, str]]:
@@ -1660,7 +1851,11 @@ def cdp_request(ws_url: str, payload: Dict[str, Any], timeout: float = 8) -> Dic
         if expected.encode("ascii") not in response_head:
             raise AdsPowerError("CDP websocket handshake verification failed")
         websocket_send_text(sock, json.dumps(payload, ensure_ascii=False))
-        return json.loads(websocket_recv_text(sock))
+        expected_id = payload.get("id")
+        while True:
+            message = json.loads(websocket_recv_text(sock))
+            if expected_id is None or message.get("id") == expected_id:
+                return message
     finally:
         sock.close()
 
@@ -1714,6 +1909,87 @@ def fill_blank_input_by_cdp(debug_port: str, text: str) -> Dict[str, Any]:
         raise AdsPowerError(f"浏览器步骤执行失败: {response_data}")
     if not result.get("ok"):
         raise AdsPowerError(result.get("error") or "浏览器步骤执行失败")
+    return result
+
+
+def fill_billing_profile_by_cdp(debug_port: str, record: Dict[str, str]) -> Dict[str, Any]:
+    record_json = json.dumps(record, ensure_ascii=False)
+    script = f"""
+(async () => {{
+  const data = {record_json};
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const visible = el => {{
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 4 && rect.height > 4 && style.visibility !== 'hidden' && style.display !== 'none';
+  }};
+  const norm = value => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const setValue = (el, value) => {{
+    el.focus();
+    if (el.isContentEditable) {{
+      el.textContent = value;
+    }} else {{
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, value);
+    }}
+    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+  }};
+  const controls = () => Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]')).filter(visible);
+  const findByText = label => {{
+    const wanted = norm(label);
+    const exact = controls().find(el => norm(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '') === wanted);
+    if (exact) return exact;
+    return controls().find(el => norm(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').includes(wanted));
+  }};
+  const clickSelect = async (label, value) => {{
+    const labels = Array.from(document.querySelectorAll('div, button, [role="button"], [role="combobox"]')).filter(visible);
+    const control = labels.find(el => norm(el.innerText).includes(norm(label)));
+    if (!control) return false;
+    control.scrollIntoView({{block: 'center'}});
+    control.click();
+    await sleep(450);
+    const options = Array.from(document.querySelectorAll('[role="option"], div, button, li')).filter(visible);
+    const target = options.find(el => norm(el.innerText).includes(norm(value)) || norm(value).includes(norm(el.innerText)));
+    if (!target) return false;
+    target.scrollIntoView({{block: 'center'}});
+    target.click();
+    await sleep(700);
+    return true;
+  }};
+
+  const fullName = findByText('Full name');
+  if (!fullName) return {{ok: false, error: '没有找到 Full name'}};
+  setValue(fullName, data.full_name);
+
+  const selectedDoSi = await clickSelect('Do Si', data.do_si);
+  if (!selectedDoSi) return {{ok: false, error: '没有找到或无法选择 Do Si: ' + data.do_si}};
+
+  await sleep(500);
+  const city = findByText('City');
+  const address1 = findByText('Address line 1');
+  const postal = findByText('Postal code');
+  if (!city) return {{ok: false, error: '没有找到 City'}};
+  if (!address1) return {{ok: false, error: '没有找到 Address line 1'}};
+  if (!postal) return {{ok: false, error: '没有找到 Postal code'}};
+  setValue(city, data.city);
+  setValue(address1, data.address1);
+  setValue(postal, data.postal_code);
+  return {{ok: true, full_name: data.full_name, do_si: data.do_si, city: data.city}};
+}})()
+"""
+    response_data = cdp_request(
+        get_page_ws_url(debug_port),
+        {"id": 1, "method": "Runtime.evaluate", "params": {"expression": script, "awaitPromise": True, "returnByValue": True}},
+        timeout=12,
+    )
+    result = response_data.get("result", {}).get("result", {}).get("value")
+    if not isinstance(result, dict):
+        raise AdsPowerError(f"账单资料填充失败: {response_data}")
+    if not result.get("ok"):
+        raise AdsPowerError(result.get("error") or "账单资料填充失败")
     return result
 
 
@@ -1879,7 +2155,9 @@ class Handler(BaseHTTPRequestHandler):
                 config_raw = parse_qs(parsed.query).get("config", ["{}"])[0]
                 cfg = json.loads(config_raw)
                 profiles = list_profiles(cfg.get("base_url") or DEFAULT_BASE_URL, cfg.get("api_key") or None)
-                response(self, 200, {"ok": True, "profiles": profiles})
+                profile_ids = [item.get("user_id") for item in profiles if item.get("user_id")]
+                billing = sync_billing_profiles(profile_ids)
+                response(self, 200, {"ok": True, "profiles": profiles, "billing": billing})
                 return
             response(self, 404, {"ok": False, "error": "Not found"})
         except Exception as exc:
@@ -1959,6 +2237,27 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if parsed.path == "/api/billing/import":
+                result = import_billing_profiles(data.get("raw") or "", data.get("profile_ids") or None)
+                response(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "message": (
+                            f"账单资料导入完成：新增 {result['added']} 条，"
+                            f"重复 {result['duplicate']} 条，跳过 {result['skipped']} 条"
+                        ),
+                        "records": result["records"],
+                    },
+                )
+                return
+
+            if parsed.path == "/api/billing/list":
+                records = sync_billing_profiles(data.get("profile_ids") or None)
+                response(self, 200, {"ok": True, "message": f"账单资料刷新完成，共 {len(records)} 条", "records": records})
+                return
+
             base_url = data.get("base_url") or DEFAULT_BASE_URL
             api_key = data.get("api_key") or None
             check_connection(base_url, api_key)
@@ -2029,6 +2328,31 @@ class Handler(BaseHTTPRequestHandler):
                 response(self, 200, {"ok": True, "message": message})
                 return
 
+            if parsed.path == "/api/billing/fill":
+                ids = [item for item in (data.get("ids") or []) if item]
+                if not ids:
+                    raise AdsPowerError("请先选择环境")
+                done = 0
+                errors = []
+                for profile_id in ids:
+                    try:
+                        record = get_or_assign_billing_profile(profile_id)
+                        started = open_profile(base_url, api_key, profile_id)
+                        debug_port = str(started.get("data", {}).get("debug_port") or "")
+                        if not debug_port:
+                            raise AdsPowerError("AdsPower 没有返回调试端口")
+                        fill_billing_profile_by_cdp(debug_port, record)
+                        done += 1
+                        time.sleep(0.8)
+                    except Exception as exc:
+                        errors.append(f"{profile_id}: {exc}")
+                records = load_billing_profiles()
+                message = f"第一步完成：已填充 {done}/{len(ids)} 个环境"
+                if errors:
+                    message += f"，失败 {len(errors)} 个：{'；'.join(errors[:3])}"
+                response(self, 200, {"ok": True, "message": message, "records": records})
+                return
+
             if parsed.path == "/api/close":
                 ids = data.get("ids") or []
                 closed = 0
@@ -2062,7 +2386,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/delete":
                 ids = data.get("ids") or []
                 request_json("POST", base_url, "/api/v1/user/delete", {"user_ids": ids}, api_key)
-                response(self, 200, {"ok": True, "message": f"已删除 {len(ids)} 个环境", "profiles": list_profiles(base_url, api_key)})
+                billing = remove_billing_for_profiles(ids)
+                response(self, 200, {"ok": True, "message": f"已删除 {len(ids)} 个环境", "profiles": list_profiles(base_url, api_key), "billing": billing})
                 return
 
             if parsed.path == "/api/profile-proxy/update":
