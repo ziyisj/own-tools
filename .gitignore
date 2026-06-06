@@ -1,0 +1,6 @@
+proxies.txt
+mail_accounts.json
+completed_accounts.txt
+completed_profiles.json
+__pycache__/
+*.pyc
