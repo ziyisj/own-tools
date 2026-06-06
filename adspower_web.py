@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import json
 import html as html_lib
+import base64
+import hashlib
 import os
 import random
 import re
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -261,16 +264,14 @@ HTML = r"""<!doctype html>
       text-decoration: underline;
       text-underline-offset: 2px;
     }
-    .ops {
-      display: flex;
-      gap: 6px;
-      flex-wrap: nowrap;
-      align-items: center;
+    .step-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(220px, 1fr));
+      gap: 12px;
     }
-    .ops button {
-      min-width: 34px;
-      padding: 7px 9px;
-      white-space: nowrap;
+    .step-box textarea {
+      min-height: 92px;
+      resize: vertical;
     }
     #log {
       white-space: pre-wrap;
@@ -284,7 +285,7 @@ HTML = r"""<!doctype html>
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     @media (max-width: 1200px) {
-      .grid, .two, .mail-view {
+      .grid, .two, .mail-view, .step-grid {
         grid-template-columns: 1fr;
       }
       header {
@@ -316,6 +317,32 @@ HTML = r"""<!doctype html>
       <button onclick="updateProject()">在线更新</button>
     </section>
 
+    <section>
+      <div class="section-head">
+        <h2>浏览器步骤</h2>
+      </div>
+      <div class="step-grid">
+        <div class="step-box">
+          <label>第一步提示词
+            <textarea id="stepPrompt1" placeholder="一行一个，点击第一步时随机选一行填入浏览器空白输入框"></textarea>
+          </label>
+          <button class="primary" onclick="runBrowserStep(1)">第一步</button>
+        </div>
+        <div class="step-box">
+          <label>第二步提示词
+            <textarea id="stepPrompt2" placeholder="一行一个，点击第二步时随机选一行填入浏览器空白输入框"></textarea>
+          </label>
+          <button class="primary" onclick="runBrowserStep(2)">第二步</button>
+        </div>
+        <div class="step-box">
+          <label>第三步提示词
+            <textarea id="stepPrompt3" placeholder="一行一个，点击第三步时随机选一行填入浏览器空白输入框"></textarea>
+          </label>
+          <button class="primary" onclick="runBrowserStep(3)">第三步</button>
+        </div>
+      </div>
+    </section>
+
     <div class="two">
       <section>
         <div class="section-head">
@@ -343,11 +370,6 @@ HTML = r"""<!doctype html>
           <div class="row">
             <button onclick="toggleAllProfiles(true)">全选</button>
             <button onclick="toggleAllProfiles(false)">取消全选</button>
-            <button class="primary" onclick="openSelected()">打开选中</button>
-            <button class="primary" onclick="openAll()">打开全部</button>
-            <button onclick="navigateSelected()">访问网址</button>
-            <button onclick="closeSelected()">关闭选中</button>
-            <button onclick="closeAll()">关闭全部</button>
             <button class="danger" onclick="deleteSelected()">删除选中</button>
             <button class="success" onclick="exportCompleted()">导出完成数据</button>
             <button onclick="fetchAllMail()">读取全部邮件</button>
@@ -361,7 +383,7 @@ HTML = r"""<!doctype html>
           <table>
             <thead>
               <tr>
-                <th></th><th>序号</th><th class="id">环境ID</th><th>名称</th><th>邮箱备注</th><th>邮件</th><th>验证码</th><th class="proxy">代理</th><th>代理状态</th><th>浏览器操作</th><th>快捷删除</th><th>类型</th><th>完成</th>
+                <th></th><th>序号</th><th class="id">环境ID</th><th>名称</th><th>邮箱备注</th><th>邮件</th><th>验证码</th><th class="proxy">代理</th><th>代理状态</th><th>快捷删除</th><th>类型</th><th>完成</th>
               </tr>
             </thead>
             <tbody id="profilesBody"></tbody>
@@ -452,6 +474,11 @@ HTML = r"""<!doctype html>
     let mailReading = false;
     const envApiKey = "__API_KEY__";
     if (envApiKey) document.getElementById("apiKey").value = envApiKey;
+    for (const step of [1, 2, 3]) {
+      const field = document.getElementById(`stepPrompt${step}`);
+      field.value = localStorage.getItem(`adspower-step-${step}`) || "";
+      field.addEventListener("input", () => localStorage.setItem(`adspower-step-${step}`, field.value));
+    }
 
     function cfg() {
       return {
@@ -516,7 +543,6 @@ HTML = r"""<!doctype html>
           <td id="profile-proxy-status-${item.user_id || ""}" class="state-cell"><span class="badge badge-idle">点此检测</span></td>
           <td></td>
           <td></td>
-          <td></td>
           <td></td>`;
         if (email) {
           const emailSpan = document.createElement("span");
@@ -550,32 +576,11 @@ HTML = r"""<!doctype html>
           tr.children[8].onclick = () => checkProfileProxy(item.user_id || "", proxyPayload);
           tr.children[8].title = "点击检测当前环境代理";
         }
-        const ops = document.createElement("div");
-        ops.className = "ops";
-        const openButton = document.createElement("button");
-        openButton.textContent = "开";
-        openButton.title = "打开环境";
-        openButton.onclick = () => openProfiles([item.user_id || ""]);
-        ops.appendChild(openButton);
-
-        const closeButton = document.createElement("button");
-        closeButton.textContent = "关";
-        closeButton.title = "关闭环境";
-        closeButton.onclick = () => closeProfiles([item.user_id || ""]);
-        ops.appendChild(closeButton);
-
-        const visitButton = document.createElement("button");
-        visitButton.textContent = "访";
-        visitButton.title = "打开并访问上方网址";
-        visitButton.onclick = () => navigateProfiles([item.user_id || ""]);
-        ops.appendChild(visitButton);
-        tr.children[9].appendChild(ops);
-
         const deleteButton = document.createElement("button");
         deleteButton.textContent = "删除";
         deleteButton.className = "danger";
         deleteButton.onclick = () => deleteProfiles([item.user_id || ""]);
-        tr.children[10].appendChild(deleteButton);
+        tr.children[9].appendChild(deleteButton);
 
         const completed = completedProfiles[item.user_id || ""];
         const tierSelect = document.createElement("select");
@@ -588,7 +593,7 @@ HTML = r"""<!doctype html>
           tierSelect.appendChild(option);
         }
         tierSelect.disabled = Boolean(completed);
-        tr.children[11].appendChild(tierSelect);
+        tr.children[10].appendChild(tierSelect);
 
         const doneButton = document.createElement("button");
         doneButton.textContent = completed ? "已完成" : "完成";
@@ -596,7 +601,7 @@ HTML = r"""<!doctype html>
         doneButton.disabled = Boolean(completed);
         doneButton.id = `complete-btn-${item.user_id || ""}`;
         doneButton.onclick = () => completeProfile(item.user_id || "", email);
-        tr.children[12].appendChild(doneButton);
+        tr.children[11].appendChild(doneButton);
         body.appendChild(tr);
       }
     }
@@ -722,34 +727,16 @@ HTML = r"""<!doctype html>
       if (!profileId) return;
       await openProfiles([profileId]);
     }
-    async function closeSelected() {
+    async function runBrowserStep(step) {
       const ids = selectedIds();
       if (!ids.length) { log("请先选择环境"); return; }
-      await closeProfiles(ids);
-    }
-    async function closeAll() {
-      const ids = profiles.map(p => p.user_id).filter(Boolean);
-      if (!ids.length) { log("没有可关闭的环境"); return; }
-      await closeProfiles(ids);
-    }
-    async function closeProfiles(ids) {
-      ids = ids.filter(Boolean);
-      if (!ids.length) return;
+      const lines = document.getElementById(`stepPrompt${step}`).value
+        .split(/\n+/)
+        .map(line => line.trim())
+        .filter(Boolean);
+      if (!lines.length) { log(`请先填写第 ${step} 步提示词`); return; }
       try {
-        const data = await api("/api/close", {...cfg(), ids});
-        log(data.message);
-      } catch (err) { log(`错误：${err.message}`); }
-    }
-    async function navigateSelected() {
-      const ids = selectedIds();
-      if (!ids.length) { log("请先选择环境"); return; }
-      await navigateProfiles(ids);
-    }
-    async function navigateProfiles(ids) {
-      ids = ids.filter(Boolean);
-      if (!ids.length) return;
-      try {
-        const data = await api("/api/navigate", {...cfg(), ids});
+        const data = await api("/api/browser-step", {...cfg(), ids, step, prompts: lines});
         log(data.message);
       } catch (err) { log(`错误：${err.message}`); }
     }
@@ -1590,6 +1577,146 @@ def close_profile(base_url: str, api_key: Optional[str], profile_id: str) -> Non
         request_json("GET", base_url, f"/api/v1/browser/stop?user_id={quote(profile_id, safe='')}", api_key=api_key)
 
 
+def recv_all(sock: socket.socket, length: int) -> bytes:
+    chunks = []
+    remaining = length
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise AdsPowerError("CDP websocket closed unexpectedly")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def websocket_send_text(sock: socket.socket, text: str) -> None:
+    payload = text.encode("utf-8")
+    header = bytearray([0x81])
+    if len(payload) < 126:
+        header.append(0x80 | len(payload))
+    elif len(payload) < 65536:
+        header.append(0x80 | 126)
+        header.extend(struct.pack("!H", len(payload)))
+    else:
+        header.append(0x80 | 127)
+        header.extend(struct.pack("!Q", len(payload)))
+    mask = os.urandom(4)
+    masked = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+    sock.sendall(bytes(header) + mask + masked)
+
+
+def websocket_recv_text(sock: socket.socket) -> str:
+    while True:
+        first, second = recv_all(sock, 2)
+        opcode = first & 0x0F
+        masked = bool(second & 0x80)
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", recv_all(sock, 2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", recv_all(sock, 8))[0]
+        mask = recv_all(sock, 4) if masked else b""
+        payload = recv_all(sock, length) if length else b""
+        if masked:
+            payload = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+        if opcode == 1:
+            return payload.decode("utf-8", "replace")
+        if opcode == 8:
+            raise AdsPowerError("CDP websocket closed")
+        if opcode == 9:
+            continue
+
+
+def cdp_request(ws_url: str, payload: Dict[str, Any], timeout: float = 8) -> Dict[str, Any]:
+    parsed = urlparse(ws_url)
+    if parsed.scheme != "ws":
+        raise AdsPowerError(f"Unsupported CDP websocket URL: {ws_url}")
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 80
+    path = parsed.path or "/"
+    if parsed.query:
+        path += f"?{parsed.query}"
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    sock = socket.create_connection((host, port), timeout=timeout)
+    sock.settimeout(timeout)
+    try:
+        request_text = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(request_text.encode("ascii"))
+        response_head = b""
+        while b"\r\n\r\n" not in response_head:
+            response_head += sock.recv(4096)
+            if len(response_head) > 8192:
+                raise AdsPowerError("CDP websocket handshake is too large")
+        if b" 101 " not in response_head.split(b"\r\n", 1)[0]:
+            raise AdsPowerError("CDP websocket handshake failed")
+        expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()).decode("ascii")
+        if expected.encode("ascii") not in response_head:
+            raise AdsPowerError("CDP websocket handshake verification failed")
+        websocket_send_text(sock, json.dumps(payload, ensure_ascii=False))
+        return json.loads(websocket_recv_text(sock))
+    finally:
+        sock.close()
+
+
+def get_page_ws_url(debug_port: str) -> str:
+    targets = json.loads(fetch_url_text(f"http://127.0.0.1:{debug_port}/json"))
+    pages = [item for item in targets if item.get("type") == "page" and item.get("webSocketDebuggerUrl")]
+    if not pages:
+        raise AdsPowerError("没有找到可操作的浏览器页面")
+    return pages[0]["webSocketDebuggerUrl"]
+
+
+def fill_blank_input_by_cdp(debug_port: str, text: str) -> Dict[str, Any]:
+    value_json = json.dumps(text, ensure_ascii=False)
+    script = f"""
+(() => {{
+  const value = {value_json};
+  const selectors = [
+    'textarea:not([disabled]):not([readonly])',
+    'input:not([type="hidden"]):not([disabled]):not([readonly])',
+    '[contenteditable="true"]',
+    '[role="textbox"]'
+  ];
+  const nodes = selectors.flatMap(selector => Array.from(document.querySelectorAll(selector)));
+  const target = nodes.find(el => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (rect.width < 4 || rect.height < 4 || style.visibility === 'hidden' || style.display === 'none') return false;
+    const current = el.isContentEditable ? el.innerText : (el.value || '');
+    return !current.trim();
+  }});
+  if (!target) return {{ok: false, error: '没有找到空白输入框'}};
+  target.focus();
+  if (target.isContentEditable) {{
+    target.textContent = value;
+  }} else {{
+    const setter = Object.getOwnPropertyDescriptor(target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set;
+    setter.call(target, value);
+  }}
+  target.dispatchEvent(new Event('input', {{bubbles: true}}));
+  target.dispatchEvent(new Event('change', {{bubbles: true}}));
+  return {{ok: true, tag: target.tagName.toLowerCase(), text: value}};
+}})()
+"""
+    response_data = cdp_request(
+        get_page_ws_url(debug_port),
+        {"id": 1, "method": "Runtime.evaluate", "params": {"expression": script, "returnByValue": True}},
+    )
+    result = response_data.get("result", {}).get("result", {}).get("value")
+    if not isinstance(result, dict):
+        raise AdsPowerError(f"浏览器步骤执行失败: {response_data}")
+    if not result.get("ok"):
+        raise AdsPowerError(result.get("error") or "浏览器步骤执行失败")
+    return result
+
+
 def run_online_update() -> Dict[str, Any]:
     if getattr(sys, "frozen", False):
         return run_windows_exe_update()
@@ -1872,6 +1999,34 @@ class Handler(BaseHTTPRequestHandler):
                     open_url_by_debug_port(debug_port, data.get("target_url") or DEFAULT_TARGET_URL)
                     time.sleep(1.1)
                 response(self, 200, {"ok": True, "message": f"已打开 {len(ids)} 个环境"})
+                return
+
+            if parsed.path == "/api/browser-step":
+                ids = [item for item in (data.get("ids") or []) if item]
+                prompts = [str(item).strip() for item in (data.get("prompts") or []) if str(item).strip()]
+                step = str(data.get("step") or "")
+                if not ids:
+                    raise AdsPowerError("请先选择环境")
+                if not prompts:
+                    raise AdsPowerError("请先填写步骤提示词")
+                done = 0
+                errors = []
+                for profile_id in ids:
+                    prompt = random.choice(prompts)
+                    try:
+                        started = open_profile(base_url, api_key, profile_id)
+                        debug_port = str(started.get("data", {}).get("debug_port") or "")
+                        if not debug_port:
+                            raise AdsPowerError("AdsPower 没有返回调试端口")
+                        fill_blank_input_by_cdp(debug_port, prompt)
+                        done += 1
+                        time.sleep(0.6)
+                    except Exception as exc:
+                        errors.append(f"{profile_id}: {exc}")
+                message = f"第 {step} 步完成：已填入 {done}/{len(ids)} 个环境"
+                if errors:
+                    message += f"，失败 {len(errors)} 个：{'；'.join(errors[:3])}"
+                response(self, 200, {"ok": True, "message": message})
                 return
 
             if parsed.path == "/api/close":
