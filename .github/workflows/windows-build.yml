@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -45,9 +48,23 @@ jobs:
           - completed_accounts.txt
           - completed_profiles.json
           "@ | Set-Content -Encoding UTF8 package\README-Windows.txt
+          Compress-Archive -Path package\* -DestinationPath AdsPowerConsole-Windows.zip -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AdsPowerConsole-Windows
           path: package
+
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Windows Build
+          body: |
+            Latest Windows build from main.
+
+            Download `AdsPowerConsole-Windows.zip`, unzip it, then run `start.bat`.
+          files: AdsPowerConsole-Windows.zip
+          make_latest: true
+          prerelease: false
