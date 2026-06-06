@@ -341,13 +341,13 @@ HTML = r"""<!doctype html>
         </div>
       </div>
       <label>账单资料
-        <textarea id="billingInput" placeholder="一行一条：Full Name----Do Si----City----Address line 1----Postal code&#10;也支持指定环境：环境ID----Full Name----Do Si----City----Address line 1----Postal code"></textarea>
+        <textarea id="billingInput" placeholder="一行一条：Full Name----City----Address line 1----Postal code&#10;也支持指定环境：环境ID----Full Name----City----Address line 1----Postal code"></textarea>
       </label>
       <div class="table-wrap" style="margin-top:10px">
         <table>
           <thead>
             <tr>
-              <th>#</th><th>状态</th><th>环境ID</th><th>Full name</th><th>Do Si</th><th>City</th><th>Address line 1</th><th>Postal code</th>
+              <th>#</th><th>状态</th><th>环境ID</th><th>Full name</th><th>City</th><th>Address line 1</th><th>Postal code</th>
             </tr>
           </thead>
           <tbody id="billingBody"></tbody>
@@ -631,7 +631,6 @@ HTML = r"""<!doctype html>
           <td>${item.profile_id ? "已绑定" : "未使用"}</td>
           <td>${item.profile_id || ""}</td>
           <td>${item.full_name || ""}</td>
-          <td>${item.do_si || ""}</td>
           <td>${item.city || ""}</td>
           <td>${item.address1 || ""}</td>
           <td>${item.postal_code || ""}</td>`;
@@ -1213,7 +1212,6 @@ def billing_key(record: Dict[str, str]) -> str:
     return "----".join(
         [
             record.get("full_name", "").strip(),
-            record.get("do_si", "").strip(),
             record.get("city", "").strip(),
             record.get("address1", "").strip(),
             record.get("postal_code", "").strip(),
@@ -1227,19 +1225,18 @@ def parse_billing_line(line: str) -> Optional[Dict[str, str]]:
         return None
     parts = [part.strip() for part in value.split("----")]
     profile_id = ""
-    if len(parts) == 5:
-        full_name, do_si, city, address1, postal_code = parts
-    elif len(parts) >= 6:
-        profile_id, full_name, do_si, city, address1 = parts[:5]
-        postal_code = "----".join(parts[5:]).strip()
+    if len(parts) == 4:
+        full_name, city, address1, postal_code = parts
+    elif len(parts) >= 5:
+        profile_id, full_name, city, address1 = parts[:4]
+        postal_code = "----".join(parts[4:]).strip()
     else:
         raise AdsPowerError(f"账单资料格式错误：{value}")
-    if not all([full_name, do_si, city, address1, postal_code]):
+    if not all([full_name, city, address1, postal_code]):
         raise AdsPowerError(f"账单资料字段不能为空：{value}")
     return {
         "profile_id": profile_id,
         "full_name": full_name,
-        "do_si": do_si,
         "city": city,
         "address1": address1,
         "postal_code": postal_code,
@@ -1870,28 +1867,9 @@ def fill_billing_profile_by_cdp(debug_port: str, record: Dict[str, str]) -> Dict
     if (exact) return exact;
     return controls().find(el => norm(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').includes(wanted));
   }};
-  const clickSelect = async (label, value) => {{
-    const labels = Array.from(document.querySelectorAll('div, button, [role="button"], [role="combobox"]')).filter(visible);
-    const control = labels.find(el => norm(el.innerText).includes(norm(label)));
-    if (!control) return false;
-    control.scrollIntoView({{block: 'center'}});
-    control.click();
-    await sleep(450);
-    const options = Array.from(document.querySelectorAll('[role="option"], div, button, li')).filter(visible);
-    const target = options.find(el => norm(el.innerText).includes(norm(value)) || norm(value).includes(norm(el.innerText)));
-    if (!target) return false;
-    target.scrollIntoView({{block: 'center'}});
-    target.click();
-    await sleep(700);
-    return true;
-  }};
-
   const fullName = findByText('Full name');
   if (!fullName) return {{ok: false, error: '没有找到 Full name'}};
   setValue(fullName, data.full_name);
-
-  const selectedDoSi = await clickSelect('Do Si', data.do_si);
-  if (!selectedDoSi) return {{ok: false, error: '没有找到或无法选择 Do Si: ' + data.do_si}};
 
   await sleep(500);
   const city = findByText('City');
@@ -1903,7 +1881,7 @@ def fill_billing_profile_by_cdp(debug_port: str, record: Dict[str, str]) -> Dict
   setValue(city, data.city);
   setValue(address1, data.address1);
   setValue(postal, data.postal_code);
-  return {{ok: true, full_name: data.full_name, do_si: data.do_si, city: data.city}};
+  return {{ok: true, full_name: data.full_name, city: data.city}};
 }})()
 """
     response_data = cdp_request(
