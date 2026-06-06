@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import webbrowser
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
@@ -39,6 +40,7 @@ DEFAULT_PORT = 8765
 DEFAULT_MAIL_FILE = "mail_accounts.json"
 DEFAULT_COMPLETED_FILE = "completed_accounts.txt"
 DEFAULT_COMPLETED_META_FILE = "completed_profiles.json"
+GITHUB_REPO = "ziyisj/own-tools"
 COUNTRY_CACHE: Dict[str, str] = {}
 
 
@@ -734,7 +736,7 @@ HTML = r"""<!doctype html>
       } catch (err) { log(`错误：${err.message}`); }
     }
     async function updateProject() {
-      if (!confirm("确认从 GitHub 拉取最新代码并重启本地服务？")) return;
+      if (!confirm("确认在线更新并重启？Windows 版会从 GitHub Releases 下载最新 exe。")) return;
       try {
         log("正在在线更新...");
         const data = await api("/api/update", {});
@@ -1415,6 +1417,12 @@ def update_profile_proxy(
 
 
 def run_online_update() -> Dict[str, Any]:
+    if getattr(sys, "frozen", False):
+        return run_windows_exe_update()
+    return run_source_update()
+
+
+def run_source_update() -> Dict[str, Any]:
     cwd = os.path.dirname(os.path.abspath(__file__))
     remote = subprocess.run(
         ["git", "remote", "get-url", "origin"],
@@ -1446,12 +1454,71 @@ def run_online_update() -> Dict[str, Any]:
     return {
         "remote": remote.stdout.strip(),
         "output": (pull.stdout or pull.stderr or "").strip(),
+        "restart": "source",
+    }
+
+
+def run_windows_exe_update() -> Dict[str, Any]:
+    app_dir = os.path.dirname(os.path.abspath(sys.executable))
+    release_api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    release = json.loads(fetch_url_text(release_api))
+    assets = release.get("assets", [])
+    asset = next((item for item in assets if item.get("name") == "AdsPowerConsole-Windows.zip"), None)
+    if not asset:
+        raise AdsPowerError("最新 Release 里没有 AdsPowerConsole-Windows.zip")
+
+    zip_path = os.path.join(app_dir, "AdsPowerConsole-Windows-update.zip")
+    update_dir = os.path.join(app_dir, "_update")
+    os.makedirs(update_dir, exist_ok=True)
+
+    req = request.Request(asset["browser_download_url"], headers={"Accept": "application/octet-stream"})
+    try:
+        with request.urlopen(req, timeout=90) as resp, open(zip_path, "wb") as handle:
+            handle.write(resp.read())
+    except error.URLError as exc:
+        raise AdsPowerError(f"下载更新失败: {exc}") from exc
+
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        archive.extractall(update_dir)
+
+    next_exe = os.path.join(update_dir, "AdsPowerConsole.exe")
+    if not os.path.exists(next_exe):
+        raise AdsPowerError("更新包里没有 AdsPowerConsole.exe")
+
+    batch_path = os.path.join(app_dir, "apply_update.bat")
+    current_exe = os.path.abspath(sys.executable)
+    script = f"""@echo off
+timeout /t 2 /nobreak >nul
+copy /Y "{next_exe}" "{current_exe}" >nul
+if exist "{os.path.join(update_dir, 'start.bat')}" copy /Y "{os.path.join(update_dir, 'start.bat')}" "{os.path.join(app_dir, 'start.bat')}" >nul
+if exist "{os.path.join(update_dir, 'README-Windows.txt')}" copy /Y "{os.path.join(update_dir, 'README-Windows.txt')}" "{os.path.join(app_dir, 'README-Windows.txt')}" >nul
+rmdir /S /Q "{update_dir}" >nul 2>nul
+del /Q "{zip_path}" >nul 2>nul
+start "" "{current_exe}"
+del "%~f0"
+"""
+    with open(batch_path, "w", encoding="ascii", newline="\r\n") as handle:
+        handle.write(script)
+
+    return {
+        "remote": f"https://github.com/{GITHUB_REPO}/releases/latest",
+        "output": "已下载最新 Windows 版，服务即将重启并替换 exe",
+        "restart": "windows-exe",
+        "batch_path": batch_path,
     }
 
 
 def schedule_restart() -> None:
     def restart() -> None:
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+
+    threading.Timer(1.0, restart).start()
+
+
+def schedule_windows_exe_restart(batch_path: str) -> None:
+    def restart() -> None:
+        subprocess.Popen(["cmd", "/c", batch_path], cwd=os.path.dirname(os.path.abspath(sys.executable)))
+        os._exit(0)
 
     threading.Timer(1.0, restart).start()
 
@@ -1559,7 +1626,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if parsed.path == "/api/update":
                 result = run_online_update()
-                schedule_restart()
+                if result.get("restart") == "windows-exe":
+                    schedule_windows_exe_restart(result["batch_path"])
+                else:
+                    schedule_restart()
                 response(
                     self,
                     200,
