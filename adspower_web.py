@@ -16,6 +16,7 @@ import time
 import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib import error, request
@@ -732,7 +733,7 @@ HTML = r"""<!doctype html>
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "completed_accounts.txt";
+        a.download = `completed_accounts_${timestampMinute()}.txt`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -741,6 +742,11 @@ HTML = r"""<!doctype html>
         renderProfiles(profiles);
         log("已导出完成数据，并清空本地完成列表");
       } catch (err) { log(`错误：${err.message}`); }
+    }
+    function timestampMinute() {
+      const now = new Date();
+      const pad = value => String(value).padStart(2, "0");
+      return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
     }
     async function updateProject() {
       if (!confirm("确认在线更新并重启？Windows 版会从 GitHub Releases 下载最新 exe。")) return;
@@ -1625,7 +1631,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = content.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Disposition", 'attachment; filename="completed_accounts.txt"')
+                filename = f"completed_accounts_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
