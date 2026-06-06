@@ -1584,20 +1584,36 @@ def run_windows_exe_update() -> Dict[str, Any]:
     if not os.path.exists(next_exe):
         raise AdsPowerError("更新包里没有 AdsPowerConsole.exe")
 
+    def ps_quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
     batch_path = os.path.join(app_dir, "apply_update.bat")
+    ps_path = os.path.join(app_dir, "apply_update.ps1")
     current_exe = os.path.abspath(sys.executable)
-    script = f"""@echo off
-timeout /t 2 /nobreak >nul
-copy /Y "{next_exe}" "{current_exe}" >nul
-if exist "{os.path.join(update_dir, 'start.bat')}" copy /Y "{os.path.join(update_dir, 'start.bat')}" "{os.path.join(app_dir, 'start.bat')}" >nul
-if exist "{os.path.join(update_dir, 'README-Windows.txt')}" copy /Y "{os.path.join(update_dir, 'README-Windows.txt')}" "{os.path.join(app_dir, 'README-Windows.txt')}" >nul
-rmdir /S /Q "{update_dir}" >nul 2>nul
-del /Q "{zip_path}" >nul 2>nul
-start "" "{current_exe}"
-del "%~f0"
+    ps_script = f"""Start-Sleep -Seconds 2
+Copy-Item -LiteralPath {ps_quote(next_exe)} -Destination {ps_quote(current_exe)} -Force
+$startBat = Join-Path {ps_quote(update_dir)} 'start.bat'
+if (Test-Path -LiteralPath $startBat) {{
+  Copy-Item -LiteralPath $startBat -Destination (Join-Path {ps_quote(app_dir)} 'start.bat') -Force
+}}
+$readme = Join-Path {ps_quote(update_dir)} 'README-Windows.txt'
+if (Test-Path -LiteralPath $readme) {{
+  Copy-Item -LiteralPath $readme -Destination (Join-Path {ps_quote(app_dir)} 'README-Windows.txt') -Force
+}}
+Remove-Item -LiteralPath {ps_quote(update_dir)} -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath {ps_quote(zip_path)} -Force -ErrorAction SilentlyContinue
+Start-Process -FilePath {ps_quote(current_exe)}
+Start-Sleep -Milliseconds 500
+Remove-Item -LiteralPath {ps_quote(batch_path)} -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath {ps_quote(ps_path)} -Force -ErrorAction SilentlyContinue
 """
+    batch_script = """@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0apply_update.ps1"
+"""
+    with open(ps_path, "w", encoding="utf-8-sig", newline="\r\n") as handle:
+        handle.write(ps_script)
     with open(batch_path, "w", encoding="ascii", newline="\r\n") as handle:
-        handle.write(script)
+        handle.write(batch_script)
 
     return {
         "remote": f"https://github.com/{GITHUB_REPO}/releases/latest",
