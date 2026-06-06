@@ -261,6 +261,17 @@ HTML = r"""<!doctype html>
       text-decoration: underline;
       text-underline-offset: 2px;
     }
+    .ops {
+      display: flex;
+      gap: 6px;
+      flex-wrap: nowrap;
+      align-items: center;
+    }
+    .ops button {
+      min-width: 34px;
+      padding: 7px 9px;
+      white-space: nowrap;
+    }
     #log {
       white-space: pre-wrap;
       min-height: 88px;
@@ -332,6 +343,11 @@ HTML = r"""<!doctype html>
           <div class="row">
             <button onclick="toggleAllProfiles(true)">全选</button>
             <button onclick="toggleAllProfiles(false)">取消全选</button>
+            <button class="primary" onclick="openSelected()">打开选中</button>
+            <button class="primary" onclick="openAll()">打开全部</button>
+            <button onclick="navigateSelected()">访问网址</button>
+            <button onclick="closeSelected()">关闭选中</button>
+            <button onclick="closeAll()">关闭全部</button>
             <button class="danger" onclick="deleteSelected()">删除选中</button>
             <button class="success" onclick="exportCompleted()">导出完成数据</button>
             <button onclick="fetchAllMail()">读取全部邮件</button>
@@ -345,7 +361,7 @@ HTML = r"""<!doctype html>
           <table>
             <thead>
               <tr>
-                <th></th><th>序号</th><th class="id">环境ID</th><th>名称</th><th>邮箱备注</th><th>邮件</th><th>验证码</th><th class="proxy">代理</th><th>代理状态</th><th>快捷删除</th><th>类型</th><th>完成</th>
+                <th></th><th>序号</th><th class="id">环境ID</th><th>名称</th><th>邮箱备注</th><th>邮件</th><th>验证码</th><th class="proxy">代理</th><th>代理状态</th><th>浏览器操作</th><th>快捷删除</th><th>类型</th><th>完成</th>
               </tr>
             </thead>
             <tbody id="profilesBody"></tbody>
@@ -500,6 +516,7 @@ HTML = r"""<!doctype html>
           <td id="profile-proxy-status-${item.user_id || ""}" class="state-cell"><span class="badge badge-idle">点此检测</span></td>
           <td></td>
           <td></td>
+          <td></td>
           <td></td>`;
         if (email) {
           const emailSpan = document.createElement("span");
@@ -533,11 +550,32 @@ HTML = r"""<!doctype html>
           tr.children[8].onclick = () => checkProfileProxy(item.user_id || "", proxyPayload);
           tr.children[8].title = "点击检测当前环境代理";
         }
+        const ops = document.createElement("div");
+        ops.className = "ops";
+        const openButton = document.createElement("button");
+        openButton.textContent = "开";
+        openButton.title = "打开环境";
+        openButton.onclick = () => openProfiles([item.user_id || ""]);
+        ops.appendChild(openButton);
+
+        const closeButton = document.createElement("button");
+        closeButton.textContent = "关";
+        closeButton.title = "关闭环境";
+        closeButton.onclick = () => closeProfiles([item.user_id || ""]);
+        ops.appendChild(closeButton);
+
+        const visitButton = document.createElement("button");
+        visitButton.textContent = "访";
+        visitButton.title = "打开并访问上方网址";
+        visitButton.onclick = () => navigateProfiles([item.user_id || ""]);
+        ops.appendChild(visitButton);
+        tr.children[9].appendChild(ops);
+
         const deleteButton = document.createElement("button");
         deleteButton.textContent = "删除";
         deleteButton.className = "danger";
         deleteButton.onclick = () => deleteProfiles([item.user_id || ""]);
-        tr.children[9].appendChild(deleteButton);
+        tr.children[10].appendChild(deleteButton);
 
         const completed = completedProfiles[item.user_id || ""];
         const tierSelect = document.createElement("select");
@@ -550,7 +588,7 @@ HTML = r"""<!doctype html>
           tierSelect.appendChild(option);
         }
         tierSelect.disabled = Boolean(completed);
-        tr.children[10].appendChild(tierSelect);
+        tr.children[11].appendChild(tierSelect);
 
         const doneButton = document.createElement("button");
         doneButton.textContent = completed ? "已完成" : "完成";
@@ -558,7 +596,7 @@ HTML = r"""<!doctype html>
         doneButton.disabled = Boolean(completed);
         doneButton.id = `complete-btn-${item.user_id || ""}`;
         doneButton.onclick = () => completeProfile(item.user_id || "", email);
-        tr.children[11].appendChild(doneButton);
+        tr.children[12].appendChild(doneButton);
         body.appendChild(tr);
       }
     }
@@ -665,14 +703,16 @@ HTML = r"""<!doctype html>
     async function openSelected() {
       const ids = selectedIds();
       if (!ids.length) { log("请先选择环境"); return; }
-      try {
-        const data = await api("/api/open", {...cfg(), ids});
-        log(data.message);
-      } catch (err) { log(`错误：${err.message}`); }
+      await openProfiles(ids);
     }
     async function openAll() {
       const ids = profiles.map(p => p.user_id).filter(Boolean);
       if (!ids.length) { log("没有可打开的环境"); return; }
+      await openProfiles(ids);
+    }
+    async function openProfiles(ids) {
+      ids = ids.filter(Boolean);
+      if (!ids.length) return;
       try {
         const data = await api("/api/open", {...cfg(), ids});
         log(data.message);
@@ -680,8 +720,36 @@ HTML = r"""<!doctype html>
     }
     async function showProfile(profileId) {
       if (!profileId) return;
+      await openProfiles([profileId]);
+    }
+    async function closeSelected() {
+      const ids = selectedIds();
+      if (!ids.length) { log("请先选择环境"); return; }
+      await closeProfiles(ids);
+    }
+    async function closeAll() {
+      const ids = profiles.map(p => p.user_id).filter(Boolean);
+      if (!ids.length) { log("没有可关闭的环境"); return; }
+      await closeProfiles(ids);
+    }
+    async function closeProfiles(ids) {
+      ids = ids.filter(Boolean);
+      if (!ids.length) return;
       try {
-        const data = await api("/api/open", {...cfg(), ids: [profileId]});
+        const data = await api("/api/close", {...cfg(), ids});
+        log(data.message);
+      } catch (err) { log(`错误：${err.message}`); }
+    }
+    async function navigateSelected() {
+      const ids = selectedIds();
+      if (!ids.length) { log("请先选择环境"); return; }
+      await navigateProfiles(ids);
+    }
+    async function navigateProfiles(ids) {
+      ids = ids.filter(Boolean);
+      if (!ids.length) return;
+      try {
+        const data = await api("/api/navigate", {...cfg(), ids});
         log(data.message);
       } catch (err) { log(`错误：${err.message}`); }
     }
@@ -1515,6 +1583,13 @@ def update_profile_proxy(
     request_json("POST", base_url, "/api/v2/browser-profile/update", payload, api_key)
 
 
+def close_profile(base_url: str, api_key: Optional[str], profile_id: str) -> None:
+    try:
+        request_json("POST", base_url, "/api/v2/browser-profile/stop", {"profile_id": profile_id}, api_key)
+    except AdsPowerError:
+        request_json("GET", base_url, f"/api/v1/browser/stop?user_id={quote(profile_id, safe='')}", api_key=api_key)
+
+
 def run_online_update() -> Dict[str, Any]:
     if getattr(sys, "frozen", False):
         return run_windows_exe_update()
@@ -1797,6 +1872,36 @@ class Handler(BaseHTTPRequestHandler):
                     open_url_by_debug_port(debug_port, data.get("target_url") or DEFAULT_TARGET_URL)
                     time.sleep(1.1)
                 response(self, 200, {"ok": True, "message": f"已打开 {len(ids)} 个环境"})
+                return
+
+            if parsed.path == "/api/close":
+                ids = data.get("ids") or []
+                closed = 0
+                errors = []
+                for profile_id in ids:
+                    try:
+                        close_profile(base_url, api_key, profile_id)
+                        closed += 1
+                        time.sleep(0.5)
+                    except Exception as exc:
+                        errors.append(f"{profile_id}: {exc}")
+                message = f"已关闭 {closed} 个环境"
+                if errors:
+                    message += f"，失败 {len(errors)} 个：{'；'.join(errors[:3])}"
+                response(self, 200, {"ok": True, "message": message})
+                return
+
+            if parsed.path == "/api/navigate":
+                ids = data.get("ids") or []
+                target_url = data.get("target_url") or DEFAULT_TARGET_URL
+                visited = 0
+                for profile_id in ids:
+                    started = open_profile(base_url, api_key, profile_id)
+                    debug_port = str(started.get("data", {}).get("debug_port") or "")
+                    if open_url_by_debug_port(debug_port, target_url):
+                        visited += 1
+                    time.sleep(1.1)
+                response(self, 200, {"ok": True, "message": f"已让 {visited}/{len(ids)} 个环境访问：{target_url}"})
                 return
 
             if parsed.path == "/api/delete":
