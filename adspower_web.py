@@ -797,7 +797,9 @@ HTML = r"""<!doctype html>
           const ip = document.getElementById(`proxy-ip-${item.index}`);
           const country = document.getElementById(`proxy-country-${item.index}`);
           const ms = document.getElementById(`proxy-ms-${item.index}`);
-          setProxyStatus(item.index, item.ok ? "ok" : "fail", item.ok ? "可用" : "失败", item.error || "");
+          const statusText = item.ok ? "可用" : (item.stage_label || "失败");
+          const detail = item.detail || item.error || "";
+          setProxyStatus(item.index, item.ok ? "ok" : "fail", statusText, detail);
           if (ip) ip.textContent = item.ip || "";
           if (country) country.textContent = item.country || "";
           if (ms) ms.textContent = item.ms ? `${item.ms} ms` : "";
@@ -837,10 +839,10 @@ HTML = r"""<!doctype html>
         setProfileProxyStatus(
           profileId,
           result.ok ? "ok" : "fail",
-          result.ok ? `可用 ${result.ip || ""} ${result.country || ""}` : "失败",
-          result.error || ""
+          result.ok ? `可用 ${result.ip || ""} ${result.country || ""}` : (result.stage_label || "失败"),
+          result.detail || result.error || ""
         );
-        log(result.ok ? `环境 ${profileId} 代理可用：${result.ip}` : `环境 ${profileId} 代理失败：${result.error}`);
+        log(result.ok ? `环境 ${profileId} 代理可用：${result.ip}` : `环境 ${profileId} 代理失败：${result.stage_label || "失败"} ${result.error || ""}`);
       } catch (err) {
         setProfileProxyStatus(profileId, "fail", "失败", err.message);
         log(`错误：${err.message}`);
@@ -1311,41 +1313,121 @@ def read_proxy_entries(proxy_file: str) -> List[Dict[str, Any]]:
     return entries
 
 
+PROXY_STAGE_LABELS = {
+    "tcp": "TCP失败",
+    "method": "握手失败",
+    "auth": "认证失败",
+    "connect": "目标失败",
+    "outbound": "出口失败",
+    "config": "配置错误",
+}
+
+
+class ProxyCheckError(AdsPowerError):
+    def __init__(self, stage: str, message: str):
+        super().__init__(message)
+        self.stage = stage
+        self.stage_label = PROXY_STAGE_LABELS.get(stage, "失败")
+
+
+def proxy_fail_result(started: float, exc: Exception) -> Dict[str, Any]:
+    stage = getattr(exc, "stage", "outbound")
+    stage_label = getattr(exc, "stage_label", PROXY_STAGE_LABELS.get(stage, "失败"))
+    return {
+        "ok": False,
+        "ip": "",
+        "country": "",
+        "ms": int((time.monotonic() - started) * 1000),
+        "stage": stage,
+        "stage_label": stage_label,
+        "error": str(exc),
+        "detail": f"{stage_label}：{exc}",
+    }
+
+
+def recv_exact(sock: socket.socket, length: int, stage: str) -> bytes:
+    chunks = []
+    remaining = length
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ProxyCheckError(stage, "connection closed before SOCKS5 reply was complete")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def socks5_connect(proxy: Dict[str, str], dest_host: str, dest_port: int, timeout: float = 12) -> socket.socket:
-    sock = socket.create_connection((proxy["host"], int(proxy["port"])), timeout=timeout)
+    try:
+        sock = socket.create_connection((proxy["host"], int(proxy["port"])), timeout=timeout)
+    except Exception as exc:
+        raise ProxyCheckError("tcp", str(exc)) from exc
     sock.settimeout(timeout)
     user = proxy["user"].encode("utf-8")
     password = proxy["password"].encode("utf-8")
 
-    sock.sendall(b"\x05\x01\x02")
-    version, method = sock.recv(2)
+    try:
+        sock.sendall(b"\x05\x01\x02")
+        version, method = recv_exact(sock, 2, "method")
+    except ProxyCheckError:
+        sock.close()
+        raise
+    except Exception as exc:
+        sock.close()
+        raise ProxyCheckError("method", str(exc)) from exc
     if version != 5 or method != 2:
         sock.close()
-        raise AdsPowerError("SOCKS5 authentication method not accepted")
+        raise ProxyCheckError("method", f"server selected method {method}, expected username/password")
 
-    sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(password)]) + password)
-    auth = sock.recv(2)
+    if len(user) > 255 or len(password) > 255:
+        sock.close()
+        raise ProxyCheckError("config", "SOCKS5 username/password is too long")
+    try:
+        sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(password)]) + password)
+        auth = recv_exact(sock, 2, "auth")
+    except ProxyCheckError:
+        sock.close()
+        raise
+    except Exception as exc:
+        sock.close()
+        raise ProxyCheckError("auth", str(exc)) from exc
     if len(auth) != 2 or auth[1] != 0:
         sock.close()
-        raise AdsPowerError("SOCKS5 username/password authentication failed")
+        status = auth[1] if len(auth) > 1 else "?"
+        raise ProxyCheckError("auth", f"username/password rejected, status {status}")
 
     host_bytes = dest_host.encode("idna")
     request_packet = b"\x05\x01\x00\x03" + bytes([len(host_bytes)]) + host_bytes + dest_port.to_bytes(2, "big")
-    sock.sendall(request_packet)
-    reply = sock.recv(4)
+    try:
+        sock.sendall(request_packet)
+        reply = recv_exact(sock, 4, "connect")
+    except ProxyCheckError:
+        sock.close()
+        raise
+    except Exception as exc:
+        sock.close()
+        raise ProxyCheckError("connect", str(exc)) from exc
     if len(reply) != 4 or reply[1] != 0:
         sock.close()
         code = reply[1] if len(reply) > 1 else "?"
-        raise AdsPowerError(f"SOCKS5 connect failed: {code}")
+        raise ProxyCheckError("connect", f"SOCKS5 target connect failed, code {code}")
 
     atyp = reply[3]
-    if atyp == 1:
-        sock.recv(4)
-    elif atyp == 3:
-        sock.recv(sock.recv(1)[0])
-    elif atyp == 4:
-        sock.recv(16)
-    sock.recv(2)
+    try:
+        if atyp == 1:
+            recv_exact(sock, 4, "connect")
+        elif atyp == 3:
+            size = recv_exact(sock, 1, "connect")[0]
+            recv_exact(sock, size, "connect")
+        elif atyp == 4:
+            recv_exact(sock, 16, "connect")
+        recv_exact(sock, 2, "connect")
+    except ProxyCheckError:
+        sock.close()
+        raise
+    except Exception as exc:
+        sock.close()
+        raise ProxyCheckError("connect", str(exc)) from exc
     return sock
 
 
@@ -1367,16 +1449,19 @@ def check_proxy_line(value: str, timeout: float = 8) -> Dict[str, Any]:
         raw = b"".join(chunks).decode("utf-8", "replace")
         body = raw.split("\r\n\r\n", 1)[-1].strip().splitlines()[0].strip()
         if not re.match(r"^(\d{1,3}\.){3}\d{1,3}$|^[0-9a-fA-F:]{3,}$", body):
-            raise AdsPowerError("No valid outbound IP returned")
+            raise ProxyCheckError("outbound", "no valid outbound IP returned")
         return {
             "ok": True,
             "ip": body,
             "country": lookup_country_code(body),
             "ms": int((time.monotonic() - started) * 1000),
+            "stage": "ok",
+            "stage_label": "可用",
             "error": "",
+            "detail": "",
         }
     except Exception as exc:
-        return {"ok": False, "ip": "", "country": "", "ms": int((time.monotonic() - started) * 1000), "error": str(exc)}
+        return proxy_fail_result(started, exc)
     finally:
         if sock:
             sock.close()
@@ -1388,7 +1473,8 @@ def check_proxy_config(config: Dict[str, Any], timeout: float = 8) -> Dict[str, 
     user = str(config.get("user") or "").strip()
     password = str(config.get("password") or "").strip()
     if not host or not port or not user or not password:
-        return {"ok": False, "ip": "", "country": "", "ms": 0, "error": "Proxy config is incomplete"}
+        exc = ProxyCheckError("config", "proxy config is incomplete")
+        return proxy_fail_result(time.monotonic(), exc)
     return check_proxy_line(f"{host}:{port}:{user}:{password}", timeout=timeout)
 
 
