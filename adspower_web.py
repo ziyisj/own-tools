@@ -1536,8 +1536,8 @@ class Handler(BaseHTTPRequestHandler):
                 tier = str(data.get("tier") or "5X").strip()
                 if not email:
                     raise AdsPowerError("Email is required")
-                append_completed_account(profile_id, email, tier)
-                response(self, 200, {"ok": True, "message": f"已保存完成记录：{email}----密码----{tier}"})
+                saved_line = append_completed_account(profile_id, email, tier)
+                response(self, 200, {"ok": True, "message": f"已保存完成记录：{saved_line}"})
                 return
 
             if parsed.path == "/api/completed/list":
