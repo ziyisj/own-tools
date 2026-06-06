@@ -320,26 +320,14 @@ HTML = r"""<!doctype html>
 
     <section>
       <div class="section-head">
-        <h2>浏览器步骤</h2>
+        <h2>账单</h2>
       </div>
       <div class="step-grid">
         <div class="step-box">
-          <label>第一步账单资料
-            <textarea id="stepBillingPreview" readonly placeholder="从下方导入真实账单资料后，选中环境点击第一步自动填充"></textarea>
+          <label>账单资料
+            <textarea id="stepBillingPreview" readonly placeholder="从下方导入真实账单资料后，选中环境点击账单自动填充"></textarea>
           </label>
-          <button class="primary" onclick="runBillingStep()">第一步</button>
-        </div>
-        <div class="step-box">
-          <label>第二步提示词
-            <textarea id="stepPrompt2" placeholder="一行一个，点击第二步时随机选一行填入浏览器空白输入框"></textarea>
-          </label>
-          <button class="primary" onclick="runBrowserStep(2)">第二步</button>
-        </div>
-        <div class="step-box">
-          <label>第三步提示词
-            <textarea id="stepPrompt3" placeholder="一行一个，点击第三步时随机选一行填入浏览器空白输入框"></textarea>
-          </label>
-          <button class="primary" onclick="runBrowserStep(3)">第三步</button>
+          <button class="primary" onclick="runBillingStep()">账单</button>
         </div>
       </div>
     </section>
@@ -499,11 +487,6 @@ HTML = r"""<!doctype html>
     let mailReading = false;
     const envApiKey = "__API_KEY__";
     if (envApiKey) document.getElementById("apiKey").value = envApiKey;
-    for (const step of [2, 3]) {
-      const field = document.getElementById(`stepPrompt${step}`);
-      field.value = localStorage.getItem(`adspower-step-${step}`) || "";
-      field.addEventListener("input", () => localStorage.setItem(`adspower-step-${step}`, field.value));
-    }
 
     function cfg() {
       return {
@@ -638,7 +621,7 @@ HTML = r"""<!doctype html>
       const unused = total - assigned;
       document.getElementById("billingCountText").textContent = `(${total} 条，未用 ${unused}，已绑定 ${assigned})`;
       const preview = document.getElementById("stepBillingPreview");
-      if (preview) preview.value = `未用 ${unused} 条，已绑定 ${assigned} 条。选中环境后点击第一步填充账单资料。`;
+      if (preview) preview.value = `未用 ${unused} 条，已绑定 ${assigned} 条。选中环境后点击账单填充资料。`;
       const body = document.getElementById("billingBody");
       body.innerHTML = "";
       billingProfiles.forEach((item, index) => {
@@ -796,19 +779,6 @@ HTML = r"""<!doctype html>
     async function showProfile(profileId) {
       if (!profileId) return;
       await openProfiles([profileId]);
-    }
-    async function runBrowserStep(step) {
-      const ids = selectedIds();
-      if (!ids.length) { log("请先选择环境"); return; }
-      const lines = document.getElementById(`stepPrompt${step}`).value
-        .split(/\n+/)
-        .map(line => line.trim())
-        .filter(Boolean);
-      if (!lines.length) { log(`请先填写第 ${step} 步提示词`); return; }
-      try {
-        const data = await api("/api/browser-step", {...cfg(), ids, step, prompts: lines});
-        log(data.message);
-      } catch (err) { log(`错误：${err.message}`); }
     }
     async function runBillingStep() {
       const ids = selectedIds();
@@ -1868,50 +1838,6 @@ def get_page_ws_url(debug_port: str) -> str:
     return pages[0]["webSocketDebuggerUrl"]
 
 
-def fill_blank_input_by_cdp(debug_port: str, text: str) -> Dict[str, Any]:
-    value_json = json.dumps(text, ensure_ascii=False)
-    script = f"""
-(() => {{
-  const value = {value_json};
-  const selectors = [
-    'textarea:not([disabled]):not([readonly])',
-    'input:not([type="hidden"]):not([disabled]):not([readonly])',
-    '[contenteditable="true"]',
-    '[role="textbox"]'
-  ];
-  const nodes = selectors.flatMap(selector => Array.from(document.querySelectorAll(selector)));
-  const target = nodes.find(el => {{
-    const rect = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-    if (rect.width < 4 || rect.height < 4 || style.visibility === 'hidden' || style.display === 'none') return false;
-    const current = el.isContentEditable ? el.innerText : (el.value || '');
-    return !current.trim();
-  }});
-  if (!target) return {{ok: false, error: '没有找到空白输入框'}};
-  target.focus();
-  if (target.isContentEditable) {{
-    target.textContent = value;
-  }} else {{
-    const setter = Object.getOwnPropertyDescriptor(target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set;
-    setter.call(target, value);
-  }}
-  target.dispatchEvent(new Event('input', {{bubbles: true}}));
-  target.dispatchEvent(new Event('change', {{bubbles: true}}));
-  return {{ok: true, tag: target.tagName.toLowerCase(), text: value}};
-}})()
-"""
-    response_data = cdp_request(
-        get_page_ws_url(debug_port),
-        {"id": 1, "method": "Runtime.evaluate", "params": {"expression": script, "returnByValue": True}},
-    )
-    result = response_data.get("result", {}).get("result", {}).get("value")
-    if not isinstance(result, dict):
-        raise AdsPowerError(f"浏览器步骤执行失败: {response_data}")
-    if not result.get("ok"):
-        raise AdsPowerError(result.get("error") or "浏览器步骤执行失败")
-    return result
-
-
 def fill_billing_profile_by_cdp(debug_port: str, record: Dict[str, str]) -> Dict[str, Any]:
     record_json = json.dumps(record, ensure_ascii=False)
     script = f"""
@@ -2300,34 +2226,6 @@ class Handler(BaseHTTPRequestHandler):
                 response(self, 200, {"ok": True, "message": f"已打开 {len(ids)} 个环境"})
                 return
 
-            if parsed.path == "/api/browser-step":
-                ids = [item for item in (data.get("ids") or []) if item]
-                prompts = [str(item).strip() for item in (data.get("prompts") or []) if str(item).strip()]
-                step = str(data.get("step") or "")
-                if not ids:
-                    raise AdsPowerError("请先选择环境")
-                if not prompts:
-                    raise AdsPowerError("请先填写步骤提示词")
-                done = 0
-                errors = []
-                for profile_id in ids:
-                    prompt = random.choice(prompts)
-                    try:
-                        started = open_profile(base_url, api_key, profile_id)
-                        debug_port = str(started.get("data", {}).get("debug_port") or "")
-                        if not debug_port:
-                            raise AdsPowerError("AdsPower 没有返回调试端口")
-                        fill_blank_input_by_cdp(debug_port, prompt)
-                        done += 1
-                        time.sleep(0.6)
-                    except Exception as exc:
-                        errors.append(f"{profile_id}: {exc}")
-                message = f"第 {step} 步完成：已填入 {done}/{len(ids)} 个环境"
-                if errors:
-                    message += f"，失败 {len(errors)} 个：{'；'.join(errors[:3])}"
-                response(self, 200, {"ok": True, "message": message})
-                return
-
             if parsed.path == "/api/billing/fill":
                 ids = [item for item in (data.get("ids") or []) if item]
                 if not ids:
@@ -2347,7 +2245,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as exc:
                         errors.append(f"{profile_id}: {exc}")
                 records = load_billing_profiles()
-                message = f"第一步完成：已填充 {done}/{len(ids)} 个环境"
+                message = f"账单完成：已填充 {done}/{len(ids)} 个环境"
                 if errors:
                     message += f"，失败 {len(errors)} 个：{'；'.join(errors[:3])}"
                 response(self, 200, {"ok": True, "message": message, "records": records})
